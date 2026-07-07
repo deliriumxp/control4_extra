@@ -220,6 +220,62 @@ up to `API_RETRY_TIMES` (5) during setup via `call_c4_api_retry`.
   custom-repository installation.
 - Every forked file carries a two-line attribution comment pointing at the upstream source.
 
+## Investigated and rejected: WebSocket push instead of polling
+
+Considered switching from the current per-platform `DataUpdateCoordinator` polling to
+`pyControl4.websocket.C4Websocket` (real-time push via Socket.IO), matching the official
+integration's `iot_class: local_polling` → `local_push`. **Decision: not worth it right now.**
+Revisit only if the specific blockers below get resolved upstream - don't re-research this
+from scratch, the evidence is below.
+
+Two real, independent PRs/forks already tried this, so this isn't speculation:
+- `home-assistant/core` PR [#60430](https://github.com/home-assistant/core/pull/60430) (Nov
+  2021, closed - CLA issues, never reviewed) and
+  [#60465](https://github.com/home-assistant/core/pull/60465) (2022, got real review from
+  `bdraco`, then went stale and auto-closed after 7 days of inactivity - not a technical
+  rejection, just abandoned).
+- A separately maintained fork, [`lawtancool/hass-control4`](https://github.com/lawtancool/hass-control4)
+  (46 stars, actively released, last release Feb 2026), already ships this in production. Its
+  own README says: *"this custom integration may not be as stable as the default integration,
+  as the code has not gone through Home Assistant's review process and contains the newest,
+  bleeding-edge features."*
+
+Concrete blockers found:
+1. **Blocking SSL call inside the event loop, current and unresolved.**
+   `lawtancool/pyControl4` issue [#53](https://github.com/lawtancool/pyControl4/issues/53)
+   (closed, partial fix: `ssl_verify`/`http_session` handling in `sio_connect`) regressed and
+   reopened as issue [#62](https://github.com/lawtancool/pyControl4/issues/62) (**open**, dated
+   HA 2026.x / Python 3.14 / pyControl4 1.5.0): `sio_connect()` is `async def` but internally
+   triggers synchronous `ssl.SSLContext.load_default_certs()` /
+   `set_default_verify_paths()` inside `socketio`/`engineio`, which HA's own blocking-call
+   detector flags. This matches the vendored `websocket.py` (2.0.2) we have but never adopted -
+   it still constructs a fresh `socketio.AsyncClient` per `sio_connect()` call, so the risk
+   almost certainly still applies to our vendored copy too.
+2. **Push silently misses some variables/controller generations - confirmed in production, not
+   theoretical.** `lawtancool/hass-control4` issue
+   [#50](https://github.com/lawtancool/hass-control4/issues/50): a user's thermostat current
+   temperature never updated over WebSocket on an X4 controller (worked fine on the official
+   polling-based integration). Their own fix was to bolt `async_track_time_interval` polling
+   back on top of the "push" entity every 10 seconds - i.e. push alone wasn't sufficient, and
+   nobody would learn this without a background poll to catch the drift, unlike a pure-polling
+   miss which just self-corrects next tick.
+3. **The director bearer token expires roughly every 86400 seconds, and `sio_connect()`'s own
+   docstring says it must be re-called with a fresh token when that happens "otherwise the
+   Control4 Director will stop sending WebSocket messages."** So the socket gets torn down and
+   recreated roughly daily regardless - re-triggering blocker #1 on that cadence, not a one-time
+   startup cost.
+4. **Architectural cost:** both real implementations drop `CoordinatorEntity` entirely in favor
+   of plain `Entity` subclasses with hand-rolled `_attr_available` / `extra_state_attributes`
+   dict bookkeeping and manual `schedule_update_ha_state()` calls - materially more custom state
+   management surface than our current coordinator-based platforms, in exchange for lower
+   latency.
+
+If this ever gets revisited: it would have to be additive (push as a fast-path optimization on
+top of the existing coordinator, which remains the source of truth via periodic polling as a
+correctness safety net), never a full replacement, given blocker #2. Cheaper alternative already
+available today with none of this risk: lower the `scan_interval` option (default 5s) if the
+goal is just to feel more responsive.
+
 ## Testing
 
 - No physical Director/blind hardware available in this environment. Verification done so far:
