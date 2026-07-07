@@ -18,6 +18,17 @@
   DriverWorks (Lua) driver project. It was split out into its own public repo
   (`deliriumxp/control4_extra`) since the two projects share nothing but a vendor name, and a
   HACS-installable integration needs to be public/standalone anyway.
+- Fixed a real bug: `strings.json`/`translations/en.json` (copied verbatim from upstream)
+  contained `[%key:common::config_flow::...%]` references (e.g. for "Username"/"Password"/"IP
+  address"). Those only resolve for integrations built into `home-assistant/core` — its release
+  tooling expands them into literal text at build time. A HACS custom integration never goes
+  through that step, so the config flow showed the raw `[%key:...%]` placeholder strings
+  instead of readable labels. Fixed by resolving every reference to its literal text (looked up
+  in core's own `homeassistant/strings.json`) directly in both files.
+- Added `brands/icon.svg` (+ rendered `icon.png`/`icon@2x.png`) — not yet submitted to
+  `home-assistant/brands`, so Home Assistant currently shows a generic fallback icon for this
+  integration. Submitting it there is a separate, external PR the user needs to explicitly
+  request.
 
 ## Overview
 

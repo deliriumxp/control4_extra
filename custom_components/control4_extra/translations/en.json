@@ -1,21 +1,21 @@
 {
   "config": {
     "abort": {
-      "already_configured": "[%key:common::config_flow::abort::already_configured_device%]"
+      "already_configured": "Device is already configured"
     },
     "error": {
       "cannot_connect": "Failed to connect to the Control4 director at {host}",
       "controller_not_found": "No Control4 controller found on this account",
       "director_auth_failed": "The Control4 director rejected the authentication token",
-      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
-      "unknown": "[%key:common::config_flow::error::unknown%]"
+      "invalid_auth": "Invalid authentication",
+      "unknown": "Unexpected error"
     },
     "step": {
       "user": {
         "data": {
-          "host": "[%key:common::config_flow::data::ip%]",
-          "password": "[%key:common::config_flow::data::password%]",
-          "username": "[%key:common::config_flow::data::username%]"
+          "host": "IP address",
+          "password": "Password",
+          "username": "Username"
         },
         "description": "Please enter your Control4 account details and the IP address of your local controller. You'll choose which entity types to import on the next screen (Configure)."
       }
