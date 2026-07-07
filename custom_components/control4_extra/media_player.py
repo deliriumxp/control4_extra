@@ -8,8 +8,8 @@ import enum
 import logging
 from typing import Any, override
 
-from pyControl4.error_handling import C4Exception
-from pyControl4.room import C4Room
+from .vendor.pycontrol4.error_handling import C4Exception
+from .vendor.pycontrol4.room import C4Room
 
 from homeassistant.components.media_player import (
     MediaPlayerDeviceClass,

@@ -12,9 +12,9 @@ import logging
 from typing import Any
 
 from aiohttp import client_exceptions
-from pyControl4.account import C4Account
-from pyControl4.director import C4Director
-from pyControl4.error_handling import BadCredentials
+from .vendor.pycontrol4.account import C4Account
+from .vendor.pycontrol4.director import C4Director
+from .vendor.pycontrol4.error_handling import BadCredentials
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (

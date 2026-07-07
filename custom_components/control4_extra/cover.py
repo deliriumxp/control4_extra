@@ -6,8 +6,8 @@ from datetime import timedelta
 import logging
 from typing import Any, override
 
-from pyControl4.blind import C4Blind
-from pyControl4.error_handling import C4Exception
+from .vendor.pycontrol4.blind import C4Blind
+from .vendor.pycontrol4.error_handling import C4Exception
 
 from homeassistant.components.cover import (
     ATTR_POSITION,

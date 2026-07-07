@@ -15,9 +15,9 @@ import logging
 from typing import Any, override
 
 from aiohttp.client_exceptions import ClientError
-from pyControl4.account import C4Account
-from pyControl4.director import C4Director
-from pyControl4.error_handling import BadCredentials, NotFound, Unauthorized
+from .vendor.pycontrol4.account import C4Account
+from .vendor.pycontrol4.director import C4Director
+from .vendor.pycontrol4.error_handling import BadCredentials, NotFound, Unauthorized
 import voluptuous as vol
 
 from homeassistant.config_entries import (

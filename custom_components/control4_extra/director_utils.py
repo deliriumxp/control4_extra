@@ -6,9 +6,9 @@ from collections import defaultdict
 import logging
 from typing import Any
 
-from pyControl4.account import C4Account
-from pyControl4.director import C4Director
-from pyControl4.error_handling import BadToken
+from .vendor.pycontrol4.account import C4Account
+from .vendor.pycontrol4.director import C4Director
+from .vendor.pycontrol4.error_handling import BadToken
 
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_TOKEN, CONF_USERNAME
 from homeassistant.core import HomeAssistant

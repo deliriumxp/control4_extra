@@ -6,8 +6,8 @@ from datetime import timedelta
 import logging
 from typing import Any, override
 
-from pyControl4.climate import C4Climate
-from pyControl4.error_handling import C4Exception
+from .vendor.pycontrol4.climate import C4Climate
+from .vendor.pycontrol4.error_handling import C4Exception
 
 from homeassistant.components.climate import (
     ATTR_TARGET_TEMP_HIGH,

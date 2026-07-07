@@ -62,7 +62,9 @@ directly over the network; Control4 project configuration is untouched.
 - Otherwise behave exactly like the upstream integration: same auth flow, same device
   registry/naming, same category/type-based discovery, same retry-on-`BadToken` handling.
 - Track a **current** `pyControl4` release (`2.0.2`, not the `1.5.0` upstream still pins) —
-  picked up a real latent-bug fix in the process (see "pyControl4 version" below).
+  picked up a real latent-bug fix in the process (see "pyControl4 version" below) — vendored
+  in-tree rather than pip-installed, so it can't conflict with the official integration's own
+  `1.5.0` pin when both run in the same Home Assistant instance.
 - Packaged for HACS from the start (custom repository, not a HACS-default one).
 
 ## Non-goals
@@ -94,6 +96,29 @@ Two behavioral (not just naming) differences handled:
   2.0.2. This actually fixes a latent bug in upstream's own `cover.py`: `int(level)` on an
   undefined `Level` variable would raise under 1.5.0; under 2.0.2 it cleanly hits the
   existing `if level is None: return None` guard instead.
+
+### pyControl4 is vendored, not pip-installed
+
+Found in production use: a household running both the official `control4` integration
+(pinned `pyControl4==1.5.0`) and this one (originally pinned `pyControl4==2.0.2`) got
+`AttributeError: 'C4Account' object has no attribute 'get_account_bearer_token'. Did you mean:
+'getAccountBearerToken'?` — the 1.5.0 (camelCase) build was the one actually active. Home
+Assistant runs every integration in one shared Python process/`site-packages`; only one
+version of a same-named top-level package can be installed at a time, so two integrations
+pinning different *exact* versions of `pyControl4` fight over which one wins on each restart
+(whichever gets set up last during that boot wins the reinstall - not stable).
+
+Fixed by vendoring pyControl4 2.0.2's source directly into
+`custom_components/control4_extra/vendor/pycontrol4/` (Apache-2.0, `LICENSE` included in that
+directory) instead of depending on the pip package: every `from pyControl4.x import Y` became
+`from .vendor.pycontrol4.x import Y`, and two of pyControl4's own internal modules
+(`blind.py`, `climate.py`, `light.py`, `room.py`, `__init__.py`) had an absolute
+self-import (`from pyControl4 import C4Entity`) changed to a relative one (`from . import
+C4Entity`) so they resolve within the vendored copy rather than reaching for a top-level
+`pyControl4` install. `manifest.json`'s `requirements` is now empty - nothing to pip install,
+nothing to conflict with the official integration's own pin. Verified with the same import
+test as above, but with `pyControl4` actively *uninstalled* from the scratch venv first, to
+prove there's no remaining dependency on a global install.
 
 ## Architecture
 
@@ -185,9 +210,9 @@ up to `API_RETRY_TIMES` (5) during setup via `call_c4_api_retry`.
 
 ## Packaging
 
-- `custom_components/control4_extra/` — `manifest.json` domain `control4_extra`,
-  `requirements: ["pyControl4==2.0.2"]`, `ssdp` discovery kept (`c4:director`, same as
-  upstream).
+- `custom_components/control4_extra/` — `manifest.json` domain `control4_extra`, `requirements:
+  []` (pyControl4 is vendored, see above), `ssdp` discovery kept (`c4:director`, same as
+  upstream), `issue_tracker` set (required by HACS's integration checklist).
 - `hacs.json` + `LICENSE` (Apache-2.0, matching upstream) at repo root for HACS
   custom-repository installation.
 - Every forked file carries a two-line attribution comment pointing at the upstream source.
