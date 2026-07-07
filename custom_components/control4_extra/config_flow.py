@@ -9,6 +9,10 @@
 #    alongside the existing scan-interval option, so a household can opt out
 #    of domains it doesn't want from Control4 (e.g. light/climate handled via
 #    KNX) instead of always getting all four platforms.
+#  - The user (config) flow gained a second "platforms" step right after auth
+#    succeeds, so the choice is visible during initial setup instead of only
+#    being reachable afterward via Configure (which silently defaulted to
+#    "cover" only, with no indication a choice was even possible).
 """Config flow for Control4 Extra integration."""
 
 import logging
@@ -64,6 +68,8 @@ class Control4ExtraConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Control4 Extra."""
 
     VERSION = 1
+
+    _connect_data: dict[str, Any]
 
     async def _async_try_connect(
         self, user_input: dict[str, Any]
@@ -152,11 +158,8 @@ class Control4ExtraConfigFlow(ConfigFlow, domain=DOMAIN):
                 formatted_mac = format_mac(mac)
                 await self.async_set_unique_id(formatted_mac)
                 self._abort_if_unique_id_configured()
-                return self.async_create_entry(
-                    title=controller_unique_id,
-                    data=data,
-                    options={CONF_ENABLED_PLATFORMS: DEFAULT_ENABLED_PLATFORMS},
-                )
+                self._connect_data = data
+                return await self.async_step_platforms()
 
         return self.async_show_form(
             step_id="user",
@@ -164,6 +167,27 @@ class Control4ExtraConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders=description_placeholders,
         )
+
+    async def async_step_platforms(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Let the user pick which entity types to import, before creating the entry."""
+        if user_input is not None:
+            data = self._connect_data
+            return self.async_create_entry(
+                title=data[CONF_CONTROLLER_UNIQUE_ID],
+                data=data,
+                options={CONF_ENABLED_PLATFORMS: user_input[CONF_ENABLED_PLATFORMS]},
+            )
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_ENABLED_PLATFORMS, default=DEFAULT_ENABLED_PLATFORMS
+                ): cv.multi_select(AVAILABLE_PLATFORMS),
+            }
+        )
+        return self.async_show_form(step_id="platforms", data_schema=schema)
 
     @staticmethod
     @callback
