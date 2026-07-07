@@ -25,12 +25,15 @@
   through that step, so the config flow showed the raw `[%key:...%]` placeholder strings
   instead of readable labels. Fixed by resolving every reference to its literal text (looked up
   in core's own `homeassistant/strings.json`) directly in both files.
-- Added a brand icon at `custom_components/control4_extra/brand/` (`icon.svg` source,
-  rendered `icon.png`/`icon@2x.png`). Originally placed at a repo-root `brands/` folder on the
-  assumption that showing up in HA requires a PR to the separate `home-assistant/brands` repo
-  — wrong for current HA: as of **2026.3.0**, custom integrations can ship local brand images
-  directly inside their own `custom_components/<domain>/brand/` directory (`icon.png`,
-  `icon@2x.png`, optional `dark_*`/`logo*` variants) and HA reads them straight from there, no
+- Added a brand icon at `custom_components/control4_extra/brand/`. Originally a custom-drawn
+  `icon.svg` (dark badge, "C4" monogram, teal "+"); replaced on request with Control4's actual
+  icon/logo, pulled directly from `home-assistant/brands`' `core_integrations/control4/`
+  (`icon.png`, `icon@2x.png`, `logo.png`, `logo@2x.png`) — the same images the official
+  integration shows, since this integration represents the same real-world product. Originally
+  placed at a repo-root `brands/` folder on the assumption that showing up in HA requires a PR
+  to the separate `home-assistant/brands` repo — wrong for current HA: as of **2026.3.0**,
+  custom integrations can ship local brand images directly inside their own
+  `custom_components/<domain>/brand/` directory and HA reads them straight from there, no
   external PR needed (see the Feb 2026 "Custom integrations can now ship their own brand
   images" Home Assistant developer blog post). Moved the icon there accordingly. On HA
   versions older than 2026.3.0 this integration falls back to a generic icon — submitting to

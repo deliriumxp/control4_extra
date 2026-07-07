@@ -37,9 +37,11 @@ upstream still pins.
 
 ## Brand icon
 
-Ships its own icon at `custom_components/control4_extra/brand/` — Home Assistant 2026.3+ reads
-local brand images directly from the integration directory, no `home-assistant/brands` PR
-needed. On older HA versions you'll see a generic fallback icon instead.
+Ships Control4's own icon/logo (sourced from `home-assistant/brands`' `core_integrations/control4/`,
+the same images the official integration uses) at `custom_components/control4_extra/brand/`.
+Home Assistant 2026.3+ reads local brand images directly from the integration directory, no
+`home-assistant/brands` PR needed. On older HA versions you'll see a generic fallback icon
+instead.
 
 ## License
 
