@@ -35,6 +35,12 @@ upstream still pins.
 6. Open the integration's **Configure** dialog to pick which entity types to import, and to
    mark any dry-contact covers.
 
+## Brand icon
+
+Ships its own icon at `custom_components/control4_extra/brand/` — Home Assistant 2026.3+ reads
+local brand images directly from the integration directory, no `home-assistant/brands` PR
+needed. On older HA versions you'll see a generic fallback icon instead.
+
 ## License
 
 Apache License 2.0 — see [`LICENSE`](LICENSE), same as the Home Assistant core project this
