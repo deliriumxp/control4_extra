@@ -11,9 +11,15 @@ The official `control4` integration is great, but it always imports all four of 
 lights and climate through something else (KNX, in this case) and only want Control4 for,
 say, blinds, you end up with duplicate entities you don't want.
 
-This fork keeps 100% of the upstream logic (auth, device registry, Director category/type
-discovery, retry/reauth handling — see [`docs/design.md`](docs/design.md) for exactly what
-changed and why) and adds:
+This fork keeps the upstream logic (auth, device registry, Director category/type discovery,
+retry/reauth handling — see [`docs/design.md`](docs/design.md) for exactly what changed and
+why) and adds:
+
+- **Instant updates (local push).** State arrives from the Director over its WebSocket as it
+  changes, instead of the official integration's 5-second polling. Based on the pending
+  upstream push PR (home-assistant/core#176238), with a WebSocket client that reconnects by
+  itself after a Director reboot or network drop. A light 60-second resync stays on as a
+  safety net for events a controller fails to push.
 
 - **A platform picker.** Settings → Devices & services → Control4 Extra → Configure → choose
   which of the four platforms are actually enabled. Default: `cover` only.

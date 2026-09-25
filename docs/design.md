@@ -62,12 +62,12 @@ directly over the network; Control4 project configuration is untouched.
 
 - All four upstream platforms available, but **opt-in per household** via the options flow
   (`CONF_ENABLED_PLATFORMS`, default `["cover"]`) instead of hardcoded.
-- Otherwise behave exactly like the upstream integration: same auth flow, same device
-  registry/naming, same category/type-based discovery, same retry-on-`BadToken` handling.
-- Track a **current** `pyControl4` release (`2.0.2`, not the `1.5.0` upstream still pins) —
-  picked up a real latent-bug fix in the process (see "pyControl4 version" below) — vendored
-  in-tree rather than pip-installed, so it can't conflict with the official integration's own
-  `1.5.0` pin when both run in the same Home Assistant instance.
+- Otherwise behave like upstream's push version (PR #176238): same auth flow, device
+  registry/naming, category/type-based discovery, token and `BadToken` handling - state by
+  WebSocket push instead of polling, with a reconnect that actually works (see "WebSocket").
+- Track the current `pyControl4` release (`2.0.2`), vendored in-tree rather than
+  pip-installed, so it can't conflict with the official integration's own exact pin when
+  both run in the same Home Assistant instance.
 - Packaged for HACS from the start (custom repository, not a HACS-default one).
 
 ## Non-goals
@@ -136,7 +136,7 @@ prove there's no remaining dependency on a global install.
 Still vendored now that upstream pins the same 2.0.2: the conflict is structural, not
 version-specific - the next time either side bumps, two exact pins fight again. Only the
 modules we call are vendored (`account`, `blind`, `climate`, `director`, `error_handling`,
-`light`, `room`); `websocket.py`, `alarm.py`, `fan.py`, `relay.py` are **not** in the copy.
+`light`, `room`, `websocket`); `alarm.py`, `fan.py`, `relay.py` are **not** in the copy.
 
 ### `via_device_id`, minimum Home Assistant 2026.8
 
@@ -152,47 +152,58 @@ Deliberately *not* taken from upstream: `probatio` instead of `voluptuous` (HA 2
 `voluptuous` as a permanent alias for custom integrations) and PEP 758 `except X, Y:`
 (Python 3.14-only syntax).
 
-## Architecture
+## Architecture (0.4.0+: local push)
 
 ```
-┌──────────────────────────────────────┐
-│ Home Assistant                        │
-│  control4_extra/  (forked from core)  │        HTTPS (local)       ┌──────────────┐
-│   - config_flow.py  (+ platform pick) │◄───────────────────────────►│  Director    │
-│   - __init__.py     (+ platform pick) │   pyControl4 2.0.2          │  (Control4   │
-│   - entity.py, director_utils.py      │   (C4Account, C4Director)   │  controller) │
-│   - cover.py / light.py / climate.py  │                             └──────────────┘
-│     / media_player.py  (unmodified    │
-│     upstream logic, renamed calls)    │
-└──────────────────────────────────────┘
+┌───────────────────────────────────────┐   REST (setup, commands,   ┌──────────────┐
+│ Home Assistant                         │   60 s resync)             │  Director    │
+│  control4_extra/                       │◄──────────────────────────►│  (Control4   │
+│   - __init__.py   (+ platform pick)    │   WebSocket push           │  controller) │
+│   - director_websocket.py (reconnects) │◄───────────────────────────│              │
+│   - cover/light/climate/media_player   │   vendored pyControl4 2.0.2└──────────────┘
+└───────────────────────────────────────┘
 ```
 
-### Config flow (`config_flow.py`) — unmodified upstream auth
+Base: `home-assistant/core` PR [#176238](https://github.com/home-assistant/core/pull/176238)
+(open, changes requested) taken through
+[`deliriumxp/control4-push`](https://github.com/deliriumxp/control4-push) - the same PR as a
+drop-in override of the built-in `control4`, plus `director_websocket.py`. Tests from both
+come along (`tests/`); snapshots differ from the fork only in `platform: control4_extra`.
+
+- Entities are plain `Entity` subclasses fed by push (`Control4Entity._update_callback`), not
+  coordinators. Media players keep a 5 s coordinator: part of room state is never pushed.
+- **Safety resync every 60 s** (`WEBSOCKET_RESYNC_INTERVAL_SEC`) re-reads every subscribed
+  item over REST. Kept because push demonstrably loses variables on some controllers (X4,
+  `lawtancool/hass-control4` #50) and nothing else would correct the drift. Remove only if
+  hardware shows push loses nothing.
+- The director token is refreshed `SCHEDULE_REFRESH_ADVANCE_SEC` before `validSeconds` runs
+  out and the socket reconnects with it (without that the Director stops sending, per
+  pyControl4's own `sio_connect` docstring).
+- No polling-interval option any more; a stored `scan_interval` is ignored.
+- Upstream switched to `_attr_has_entity_name = True`: friendly names become "<device>
+  <entity>". Entity IDs already in the registry don't change.
+
+### Config flow — upstream auth, then a platforms step
 
 1. User enters Control4 account email/password + Director host/IP (same as upstream).
 2. `C4Account` → account bearer token → `get_account_controllers()` → `controllerCommonName`
-   → `get_director_bearer_token()`.
-3. Entry created with `options={CONF_ENABLED_PLATFORMS: ["cover"]}` as the default.
+   → `get_director_bearer_token()`, then a test call to the Director.
+3. "platforms" step: which entity types to import; stored as
+   `options={CONF_ENABLED_PLATFORMS: [...]}` (default `["cover"]`).
 
 ### Platform selection — the actual addition
 
 - `const.py`: `CONF_ENABLED_PLATFORMS`, `AVAILABLE_PLATFORMS` (value → label for the 4
   upstream platforms), `DEFAULT_ENABLED_PLATFORMS = ["cover"]`.
-- `config_flow.py`'s `OptionsFlowHandler` (already existed upstream for `scan_interval`)
-  gained a `cv.multi_select(AVAILABLE_PLATFORMS)` field. It's an `OptionsFlowWithReload`, so
-  saving options already triggers an entry reload — no extra listener code needed.
-- `__init__.py`: `PLATFORMS` is no longer a module-level constant; `_enabled_platforms(entry)`
-  reads `entry.options[CONF_ENABLED_PLATFORMS]` and both `async_setup_entry` and
-  `async_unload_entry` forward/unload only those.
-
-### `cover.py` / `light.py` / `climate.py` / `media_player.py` — unmodified upstream logic
-
-Ported as-is (device registry wiring, category/type discovery via
-`get_items_of_category(hass, entry, category)`, per-platform `DataUpdateCoordinator`,
-retry-on-`BadToken` in `director_utils.py`). Only change: the pyControl4 method renames above.
-`cover.py` specifically: category `"blinds_shades"`, entity type `7`
-(`CONTROL4_ENTITY_TYPE`), backed by `pyControl4.blind.C4Blind` (`open`/`close`/`stop`/
-`set_level_target`), variables `Level`/`Fully Closed`/`Fully Open`/`Opening`/`Closing`.
+- `config_flow.py`: `OptionsFlowHandler` (upstream push has none) with a
+  `cv.multi_select(AVAILABLE_PLATFORMS)` field. It's an `OptionsFlowWithReload`, so saving
+  options triggers an entry reload.
+- `__init__.py`: `PLATFORMS` lists everything the integration can provide;
+  `_enabled_platforms(entry)` is the subset enabled in the options. Setup stores what it
+  forwarded in `runtime_data.platforms` and unload uses exactly that list: the options flow
+  saves the new options *before* its reload unloads, so unloading "the enabled ones" would
+  try to unload a just-enabled platform that was never loaded ("Config entry was never
+  loaded!" - found on hardware in 0.3.1, the entry stayed broken until restart).
 
 ### Dry-contact covers (`assumed_state`)
 
@@ -235,41 +246,26 @@ the proxy-protocol doc subset we had just didn't happen to include that page.
 
 ## Error handling
 
-Unmodified from upstream: `ConfigEntryNotReady` on connection failure during setup,
-`BadCredentials` → setup returns `False`, `BadToken` triggers a token refresh-and-retry once
-in `director_utils.update_variables_for_config_entry`, `client_exceptions.ClientError` retried
-up to `API_RETRY_TIMES` (5) during setup via `call_c4_api_retry`.
+From upstream push: `ConfigEntryNotReady` on connection failures during setup,
+`ConfigEntryAuthFailed` on bad credentials, token refresh retried with exponential backoff
+(`RETRY_BACKOFF_MAX_SEC`), `BadToken` on a REST call triggers one refresh-and-retry, the
+WebSocket disconnect marks entities unavailable until the reconnect resync brings them back.
 
 ## Packaging
 
-- `custom_components/control4_extra/` — `manifest.json` domain `control4_extra`, `requirements:
-  ["xmltodict>=0.13"]` (pyControl4 is vendored, see above), `ssdp` discovery kept (`c4:director`, same as
-  upstream), `issue_tracker` set (required by HACS's integration checklist).
+- `custom_components/control4_extra/` — `manifest.json` domain `control4_extra`,
+  `iot_class: local_push`, `requirements: ["xmltodict>=0.13", "python-socketio-v4>=4.6.1"]`
+  (what the vendored pyControl4 imports; lower bounds only, see above), `ssdp` discovery
+  kept (`c4:director`), `issue_tracker` set (required by HACS's integration checklist).
 - `hacs.json` + `LICENSE` (Apache-2.0, matching upstream) at repo root for HACS
   custom-repository installation.
-- Every forked file carries a two-line attribution comment pointing at the upstream source.
+- Every forked file carries an attribution comment pointing at its upstream source.
 
-## Investigated and rejected: WebSocket push instead of polling
+## WebSocket: why `director_websocket.py`
 
-Considered switching from the current per-platform `DataUpdateCoordinator` polling to
-`pyControl4.websocket.C4Websocket` (real-time push via Socket.IO), matching the official
-integration's `iot_class: local_polling` → `local_push`. **Decision: not worth it right now.**
-Revisit only if the specific blockers below get resolved upstream - don't re-research this
-from scratch, the evidence is below.
+pyControl4's `C4Websocket` as released can't be used as-is; all findings below are
+reproduced in `tests/test_director_websocket.py` against a fake Director.
 
-Two real, independent PRs/forks already tried this, so this isn't speculation:
-- `home-assistant/core` PR [#60430](https://github.com/home-assistant/core/pull/60430) (Nov
-  2021, closed - CLA issues, never reviewed) and
-  [#60465](https://github.com/home-assistant/core/pull/60465) (2022, got real review from
-  `bdraco`, then went stale and auto-closed after 7 days of inactivity - not a technical
-  rejection, just abandoned).
-- A separately maintained fork, [`lawtancool/hass-control4`](https://github.com/lawtancool/hass-control4)
-  (46 stars, actively released, last release Feb 2026), already ships this in production. Its
-  own README says: *"this custom integration may not be as stable as the default integration,
-  as the code has not gone through Home Assistant's review process and contains the newest,
-  bleeding-edge features."*
-
-Concrete blockers found:
 1. **SSL in `C4Websocket` (pyControl4 [#53](https://github.com/lawtancool/pyControl4/issues/53)
    / [#62](https://github.com/lawtancool/pyControl4/issues/62)) - reproduced and root-caused
    2026-09-25, fix proven; applies to 2.0.2 as released, #62 still open with no maintainer
@@ -298,48 +294,28 @@ Concrete blockers found:
      reference in `_reset()`; subclass the socketio `AsyncClient` so that
      `_engineio_v3_client_class()` returns it (`functools.partial` with the connector) and
      `ssl_verify=True` (the connector's no-verify context applies). Require the session - no
-     library-owned fallback. This lives in our vendored `websocket.py` once push is added.
-2. **Push silently misses some variables/controller generations - confirmed in production, not
-   theoretical.** `lawtancool/hass-control4` issue
-   [#50](https://github.com/lawtancool/hass-control4/issues/50): a user's thermostat current
-   temperature never updated over WebSocket on an X4 controller (worked fine on the official
-   polling-based integration). Their own fix was to bolt `async_track_time_interval` polling
-   back on top of the "push" entity every 10 seconds - i.e. push alone wasn't sufficient, and
-   nobody would learn this without a background poll to catch the drift, unlike a pure-polling
-   miss which just self-corrects next tick.
-3. **The director bearer token expires roughly every 86400 seconds, and `sio_connect()`'s own
-   docstring says it must be re-called with a fresh token when that happens "otherwise the
-   Control4 Director will stop sending WebSocket messages."** So the socket gets torn down and
-   recreated roughly daily regardless (a planned reconnect on the token's `validSeconds`, as
-   #176238 does it); with the fix from #1 that path makes no blocking calls.
-4. **Architectural cost:** both real implementations drop `CoordinatorEntity` entirely in favor
-   of plain `Entity` subclasses with hand-rolled `_attr_available` / `extra_state_attributes`
-   dict bookkeeping and manual `schedule_update_ha_state()` calls - materially more custom state
-   management surface than our current coordinator-based platforms, in exchange for lower
-   latency.
-
-Upstream status (2026-09-25): `home-assistant/core` PR
-[#176238](https://github.com/home-assistant/core/pull/176238) converts the official
-integration to `local_push` (keeps a 60 s resync poll for every entity and removes the
-`scan_interval` option; issue #168838 asks to remove that option regardless). It is open with
-changes requested and is affected by blocker #1's reconnect failure. Its token refresh
-and resync wiring is a usable reference. The official integration on `dev` still polls
-(5 s by default, one coordinator per platform).
-
-If this ever gets revisited: it would have to be additive (push as a fast-path optimization on
-top of the existing coordinator, which remains the source of truth via periodic polling as a
-correctness safety net), never a full replacement, given blocker #2. Cheaper alternative already
-available today with none of this risk: lower the `scan_interval` option (default 5s) if the
-goal is just to feel more responsive.
+     library-owned fallback. Implemented in `director_websocket.py` (see above).
+2. **Disconnect leaves the reconnect loop running.** `socketio_v4`'s `disconnect()` doesn't stop
+   a pending automatic reconnect, and the loop swallows `CancelledError` while it sleeps
+   between attempts - cancelling alone doesn't stop it. After an unload or token refresh
+   during a Director outage the old loop keeps retrying with the old token and, once the
+   Director is back, opens a second socket (duplicate events). `DirectorWebsocket`'s client
+   sets the loop's abort event, waits for it to exit and cancels only if it's stuck in a
+   connect attempt.
 
 ## Testing
 
 - `tests/` runs on `pytest-homeassistant-custom-component` against the minimum supported HA
   (Python 3.14): `uv venv -p 3.14 && uv pip install "homeassistant==2026.8.*"
-  pytest-homeassistant-custom-component xmltodict && pytest`. The Director is mocked
-  (`tests/conftest.py`), so nothing here proves behavior against real hardware.
+  pytest-homeassistant-custom-component xmltodict python-socketio-v4 && pytest`. Upstream's
+  push tests (Director mocked) plus `test_extra.py` (platform toggle, dry contact, device
+  link) and `test_director_websocket.py` (real sockets against a fake TLS Director). Nothing
+  here proves behavior against real hardware.
 - The platform-toggle test loads the `light` domain first on purpose: on a real instance other
   integrations (KNX) have it loaded, and only then does HA actually try to unload a platform
   that was never set up - found on hardware as "Config entry was never loaded!", invisible
   in a bare test instance.
-- Still only checked on hardware by the user: `stop_cover` on the real 2-relay blind driver.
+- Needs hardware (checklist in `deliriumxp/control4-push`'s README): state lands within ~1 s,
+  no blocking-call warnings, push resumes by itself after a Director reboot, one event per
+  change after a reload during an outage, still pushing after the ~24 h token refresh;
+  `stop_cover` on the real 2-relay blind driver.

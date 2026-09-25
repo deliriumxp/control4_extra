@@ -1,27 +1,17 @@
-# Adapted from home-assistant/core homeassistant/components/control4 (Apache-2.0).
-# See https://github.com/home-assistant/core/tree/dev/homeassistant/components/control4
+# Adapted from home-assistant/core PR #176238 (Control4 local push, Apache-2.0) via
+# github.com/deliriumxp/control4-push.
 #
 # Differences from upstream:
-#  - `except X, Y:` (PEP 758 / Python 3.14) reverted to `except (X, Y):` for
-#    compatibility with the Python versions current Home Assistant releases
-#    actually ship with.
-#  - OptionsFlowHandler gained a platform multi-select (CONF_ENABLED_PLATFORMS)
-#    alongside the existing scan-interval option, so a household can opt out
-#    of domains it doesn't want from Control4 (e.g. light/climate handled via
-#    KNX) instead of always getting all four platforms.
-#  - The user (config) flow gained a second "platforms" step right after auth
-#    succeeds, so the choice is visible during initial setup instead of only
-#    being reachable afterward via Configure (which silently defaulted to
-#    "cover" only, with no indication a choice was even possible).
+#  - The user flow gains a "platforms" step right after auth succeeds, so the
+#    household picks which entity types to import during setup.
+#  - An options flow (upstream push has none) re-picks the platforms and marks
+#    individual dry-contact covers. No polling interval: state comes by push.
 """Config flow for Control4 Extra integration."""
 
 import logging
 from typing import Any, override
 
 from aiohttp.client_exceptions import ClientError
-from .vendor.pycontrol4.account import C4Account
-from .vendor.pycontrol4.director import C4Director
-from .vendor.pycontrol4.error_handling import BadCredentials, NotFound, Unauthorized
 import voluptuous as vol
 
 from homeassistant.config_entries import (
@@ -29,17 +19,12 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlowWithReload,
 )
-from homeassistant.const import (
-    CONF_HOST,
-    CONF_PASSWORD,
-    CONF_SCAN_INTERVAL,
-    CONF_USERNAME,
-)
+from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import callback
 from homeassistant.helpers import aiohttp_client, config_validation as cv
 from homeassistant.helpers.device_registry import format_mac
 
-from . import Control4ConfigEntry, get_items_of_category
+from . import get_items_of_category
 from .const import (
     AVAILABLE_PLATFORMS,
     CONF_CONTROLLER_UNIQUE_ID,
@@ -48,10 +33,12 @@ from .const import (
     CONTROL4_COVER_CATEGORY,
     CONTROL4_ENTITY_TYPE,
     DEFAULT_ENABLED_PLATFORMS,
-    DEFAULT_SCAN_INTERVAL,
     DOMAIN,
-    MIN_SCAN_INTERVAL,
+    Control4ConfigEntry,
 )
+from .vendor.pycontrol4.account import C4Account
+from .vendor.pycontrol4.director import C4Director
+from .vendor.pycontrol4.error_handling import BadCredentials, NotFound, Unauthorized
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -95,7 +82,7 @@ class Control4ExtraConfigFlow(ConfigFlow, domain=DOMAIN):
             director_bearer_token = (
                 await account.get_director_bearer_token(controller_unique_id)
             )["token"]
-        except (BadCredentials, Unauthorized):
+        except BadCredentials, Unauthorized:
             errors["base"] = "invalid_auth"
             return errors, data, description_placeholders
         except NotFound:
@@ -118,7 +105,7 @@ class Control4ExtraConfigFlow(ConfigFlow, domain=DOMAIN):
         except Unauthorized:
             errors["base"] = "director_auth_failed"
             return errors, data, description_placeholders
-        except (ClientError, TimeoutError):
+        except ClientError, TimeoutError:
             errors["base"] = "cannot_connect"
             description_placeholders["host"] = host
             return errors, data, description_placeholders
@@ -194,7 +181,7 @@ class Control4ExtraConfigFlow(ConfigFlow, domain=DOMAIN):
     @override
     def async_get_options_flow(
         config_entry: Control4ConfigEntry,
-    ) -> "OptionsFlowHandler":
+    ) -> OptionsFlowHandler:
         """Get the options flow for this handler."""
         return OptionsFlowHandler()
 
@@ -239,26 +226,12 @@ class OptionsFlowHandler(OptionsFlowWithReload):
                 ),
             ): cv.multi_select(AVAILABLE_PLATFORMS),
         }
-
         if known_covers:
             schema[
                 vol.Optional(
                     CONF_DRY_CONTACT_COVERS,
-                    default=self.config_entry.options.get(
-                        CONF_DRY_CONTACT_COVERS, []
-                    ),
+                    default=self.config_entry.options.get(CONF_DRY_CONTACT_COVERS, []),
                 )
             ] = cv.multi_select(known_covers)
-
-        schema[
-            # Polling interval is user-configurable, which is no longer allowed
-            # pylint: disable-next=home-assistant-config-flow-polling-field
-            vol.Optional(
-                CONF_SCAN_INTERVAL,
-                default=self.config_entry.options.get(
-                    CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
-                ),
-            )
-        ] = vol.All(cv.positive_int, vol.Clamp(min=MIN_SCAN_INTERVAL))
 
         return self.async_show_form(step_id="init", data_schema=vol.Schema(schema))

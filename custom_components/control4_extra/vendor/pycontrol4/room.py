@@ -4,7 +4,7 @@
 # pip-installed one.
 #
 # Why vendored instead of a normal pip requirement: the official
-# home-assistant/core 'control4' integration pins pyControl4==1.5.0 exactly.
+# home-assistant/core 'control4' integration pins an exact pyControl4 (1.5.0 then).$
 # Only one version of a same-named top-level package can be installed in a
 # Home Assistant Python environment at a time, so a plain 'pyControl4==2.0.2'
 # requirement here would fight with the official integration for whichever

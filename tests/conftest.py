@@ -1,20 +1,26 @@
-"""Fixtures: a loadable Control4 Extra entry against a mocked Director."""
+"""Common fixtures for the Control4 tests."""
 
-from collections.abc import Generator
-from unittest.mock import AsyncMock, patch
+from collections.abc import AsyncGenerator, Generator
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.control4_extra.const import (
-    CONF_CONTROLLER_UNIQUE_ID,
+    AVAILABLE_PLATFORMS,
     CONF_ENABLED_PLATFORMS,
     DOMAIN,
 )
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME, Platform
 
-CONTROLLER_UNIQUE_ID = "control4_core1_000FFF9E4A5B"
+from pytest_homeassistant_custom_component.syrupy import HomeAssistantSnapshotExtension
+from syrupy.assertion import SnapshotAssertion
 
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    load_json_array_fixture,
+    load_json_object_fixture,
+)
 
 @pytest.fixture(autouse=True)
 def auto_enable_custom_integrations(enable_custom_integrations: None) -> None:
@@ -22,36 +28,218 @@ def auto_enable_custom_integrations(enable_custom_integrations: None) -> None:
 
 
 @pytest.fixture
-def config_entry() -> MockConfigEntry:
+def snapshot(snapshot: SnapshotAssertion) -> SnapshotAssertion:
+    """Serialize like core's tests: registry entries and states as HA snapshots."""
+    return snapshot.use_extension(HomeAssistantSnapshotExtension)
+
+
+MOCK_HOST = "192.168.1.100"
+MOCK_USERNAME = "test-username"
+MOCK_PASSWORD = "test-password"
+MOCK_CONTROLLER_UNIQUE_ID = "control4_test_123"
+
+
+@pytest.fixture
+def mock_config_entry() -> MockConfigEntry:
+    """Return the default mocked config entry."""
     return MockConfigEntry(
         domain=DOMAIN,
-        title=CONTROLLER_UNIQUE_ID,
+        title="Test Controller",
         data={
-            CONF_HOST: "192.0.2.10",
-            CONF_USERNAME: "user",
-            CONF_PASSWORD: "pass",
-            CONF_CONTROLLER_UNIQUE_ID: CONTROLLER_UNIQUE_ID,
+            CONF_HOST: MOCK_HOST,
+            CONF_USERNAME: MOCK_USERNAME,
+            CONF_PASSWORD: MOCK_PASSWORD,
+            "controller_unique_id": MOCK_CONTROLLER_UNIQUE_ID,
         },
-        options={CONF_ENABLED_PLATFORMS: ["cover"]},
+        # All enabled: which ones load is decided by the patched PLATFORMS below.
+        options={CONF_ENABLED_PLATFORMS: list(AVAILABLE_PLATFORMS)},
+        unique_id="00:aa:00:aa:00:aa",
     )
 
 
 @pytest.fixture
-def director() -> Generator[None]:
-    """C4Account/C4Director that answer like an empty project."""
+def mock_setup_entry() -> Generator[AsyncMock]:
+    """Mock control4 setup entry."""
+    with patch(
+        "custom_components.control4_extra.async_setup_entry", return_value=True
+    ) as mock_setup:
+        yield mock_setup
+
+
+@pytest.fixture
+def mock_c4_account() -> Generator[MagicMock]:
+    """Mock a Control4 Account client."""
     with (
-        patch("custom_components.control4_extra.C4Account", autospec=True) as account,
-        patch("custom_components.control4_extra.C4Director", autospec=True) as director,
+        patch(
+            "custom_components.control4_extra.C4Account", autospec=True
+        ) as mock_account_class,
+        patch(
+            "custom_components.control4_extra.config_flow.C4Account",
+            new=mock_account_class,
+        ),
     ):
-        account.return_value.get_director_bearer_token = AsyncMock(
-            return_value={"token": "t", "validSeconds": 86400}
+        mock_account = mock_account_class.return_value
+        mock_account.get_account_bearer_token = AsyncMock()
+        mock_account.get_account_controllers = AsyncMock(
+            return_value={
+                "controllerCommonName": "control4_model_00AA00AA00AA",
+                "href": "https://apis.control4.com/account/v3/rest/accounts/000000",
+                "name": "Name",
+            }
         )
-        account.return_value.get_account_controllers = AsyncMock(
-            return_value={"href": "https://example/controller"}
+        mock_account.get_director_bearer_token = AsyncMock(
+            return_value={"token": "test", "validSeconds": 86400}
         )
-        account.return_value.get_controller_os_version = AsyncMock(return_value="3.4.0")
-        director.return_value.get_all_item_info = AsyncMock(return_value=[])
-        director.return_value.get_ui_configuration = AsyncMock(return_value={})
-        director.return_value.get_all_items_by_category = AsyncMock(return_value=[])
-        director.return_value.get_all_item_variable_value = AsyncMock(return_value=[])
+        mock_account.get_controller_os_version = AsyncMock(return_value="3.2.0")
+        yield mock_account
+
+
+@pytest.fixture
+def mock_c4_director() -> Generator[MagicMock]:
+    """Mock a Control4 Director client."""
+    with (
+        patch(
+            "custom_components.control4_extra.C4Director", autospec=True
+        ) as mock_director_class,
+        patch(
+            "custom_components.control4_extra.config_flow.C4Director",
+            new=mock_director_class,
+        ),
+    ):
+        mock_director = mock_director_class.return_value
+        mock_director.director_bearer_token = "test"
+        all_items = load_json_array_fixture("director_all_items.json", DOMAIN)
+        mock_director.get_all_item_info = AsyncMock(return_value=all_items)
+        mock_director.get_all_items_by_category = AsyncMock(return_value=all_items)
+        mock_director.get_ui_configuration = AsyncMock(
+            return_value=load_json_object_fixture("ui_configuration.json", DOMAIN)
+        )
+        mock_director.get_item_variables = AsyncMock(return_value=[])
+        yield mock_director
+
+
+@pytest.fixture(autouse=True)
+def mock_c4_websocket() -> Generator[MagicMock]:
+    """Mock C4Websocket, tracking callbacks so tests can drive disconnects through the real path."""
+    item_callbacks: dict[int, list] = {}
+
+    def _add_item_callback(item_id, callback):
+        item_callbacks.setdefault(item_id, []).append(callback)
+
+    def _remove_item_callback(item_id, callback):
+        callbacks = item_callbacks.get(item_id, [])
+        if callback in callbacks:
+            callbacks.remove(callback)
+
+    with patch(
+        "custom_components.control4_extra.DirectorWebsocket", autospec=True
+    ) as mock_ws_class:
+        mock_ws = mock_ws_class.return_value
+        mock_ws.sio_connect = AsyncMock()
+        mock_ws.sio_disconnect = AsyncMock()
+        mock_ws.add_item_callback = MagicMock(side_effect=_add_item_callback)
+        mock_ws.remove_item_callback = MagicMock(side_effect=_remove_item_callback)
+        mock_ws.item_callbacks = item_callbacks
+        mock_ws.connect_callback = None
+        mock_ws.disconnect_callback = None
+
+        def _capture_callbacks(*args, **kwargs):
+            mock_ws.connect_callback = kwargs.get(
+                "connect_callback", args[2] if len(args) > 2 else None
+            )
+            mock_ws.disconnect_callback = kwargs.get(
+                "disconnect_callback", args[3] if len(args) > 3 else None
+            )
+            return mock_ws
+
+        mock_ws_class.side_effect = _capture_callbacks
+        yield mock_ws
+
+
+@pytest.fixture
+def mock_update_variables() -> Generator[AsyncMock]:
+    """Mock the update_variables_for_config_entry function for media_player."""
+
+    async def _mock_update_variables(*args, **kwargs):
+        return {
+            1: {
+                "POWER_STATE": True,
+                "CURRENT_VOLUME": 50,
+                "IS_MUTED": False,
+                "CURRENT_VIDEO_DEVICE": 100,
+                "CURRENT MEDIA INFO": {},
+                "PLAYING": False,
+                "PAUSED": False,
+                "STOPPED": False,
+            }
+        }
+
+    with patch(
+        "custom_components.control4_extra.media_player.update_variables_for_config_entry",
+        new=_mock_update_variables,
+    ) as mock_update:
+        yield mock_update
+
+
+@pytest.fixture
+def mock_climate_variables() -> dict:
+    """Mock climate variable data for default thermostat state."""
+    return {
+        123: {
+            "HVAC_STATE": "Off",
+            "HVAC_MODE": "Heat",
+            "TEMPERATURE_F": 72.5,
+            "HUMIDITY": 45,
+            "COOL_SETPOINT_F": 75.0,
+            "HEAT_SETPOINT_F": 68.0,
+            "FAN_MODE": "Auto",
+            "FAN_MODES_LIST": "Auto,On,Circulate",
+            "HVAC_MODES_LIST": "Off,Heat,Cool,Auto",
+            "SCALE": "FAHRENHEIT",
+        }
+    }
+
+
+@pytest.fixture
+def mock_climate_update_variables(
+    mock_climate_variables: dict,
+    mock_c4_director: MagicMock,
+) -> None:
+    """Mock the Director API so tests exercise the real Undefined normalization and BadToken retry."""
+
+    async def _mock_get_item_variables(item_id: int) -> list[dict[str, Any]]:
+        item_data = mock_climate_variables.get(item_id, {})
+        return [{"varName": name, "value": value} for name, value in item_data.items()]
+
+    mock_c4_director.get_item_variables = AsyncMock(
+        side_effect=_mock_get_item_variables
+    )
+
+
+@pytest.fixture
+def mock_c4_climate() -> Generator[MagicMock]:
+    """Mock C4Climate class."""
+    with patch(
+        "custom_components.control4_extra.climate.C4Climate", autospec=True
+    ) as mock_class:
+        mock_instance = mock_class.return_value
+        mock_instance.set_hvac_mode = AsyncMock()
+        mock_instance.set_heat_setpoint_f = AsyncMock()
+        mock_instance.set_cool_setpoint_f = AsyncMock()
+        mock_instance.set_fan_mode = AsyncMock()
+        mock_instance.set_heat_setpoint_c = AsyncMock()
+        mock_instance.set_cool_setpoint_c = AsyncMock()
+        yield mock_instance
+
+
+@pytest.fixture
+def platforms() -> list[Platform]:
+    """Platforms which should be loaded during the test."""
+    return [Platform.MEDIA_PLAYER]
+
+
+@pytest.fixture(autouse=True)
+async def mock_patch_platforms(platforms: list[Platform]) -> AsyncGenerator[None]:
+    """Fixture to set up platforms for tests."""
+    with patch("custom_components.control4_extra.PLATFORMS", platforms):
         yield
