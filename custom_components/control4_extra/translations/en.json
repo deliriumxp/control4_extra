@@ -1,7 +1,9 @@
 {
   "config": {
     "abort": {
-      "already_configured": "Device is already configured"
+      "already_configured": "Device is already configured",
+      "reauth_successful": "Re-authentication was successful",
+      "wrong_controller": "This account's controller is not the one this entry was set up for"
     },
     "error": {
       "cannot_connect": "Failed to connect to the Control4 director at {host}",
@@ -24,6 +26,14 @@
           "enabled_platforms": "Entity types to import from Control4"
         },
         "description": "Only the selected entity types are created in Home Assistant. You can change this later, and mark dry-contact covers, from the integration's Configure screen."
+      },
+      "reauth_confirm": {
+        "title": "Control4 sign-in expired",
+        "description": "Enter the current password of your Control4 account.",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        }
       }
     }
   },

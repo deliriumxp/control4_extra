@@ -118,3 +118,75 @@ async def test_устройство_привязано_к_контроллеру
         identifiers={(DOMAIN, mock_config_entry.data["controller_unique_id"])}
     )
     assert device.via_device_id == controller.id
+
+
+async def _open_and_save(hass: HomeAssistant, entry: MockConfigEntry, user_input: dict) -> dict:
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    schema_keys = {str(key) for key in flow["data_schema"].schema}
+    result = await hass.config_entries.options.async_configure(flow["flow_id"], user_input)
+    await hass.async_block_till_done()
+    return {"schema_keys": schema_keys, "result": result}
+
+
+@pytest.mark.usefixtures("mock_c4_account", "cover_variables")
+async def test_настройки_без_списка_штор_не_стирают_сухой_контакт(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry, mock_c4_director: MagicMock
+) -> None:
+    """Директор не отдал список штор (офлайн, токен) — поле пропало, но отметки остались."""
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            CONF_ENABLED_PLATFORMS: ["cover"],
+            CONF_DRY_CONTACT_COVERS: [str(COVER_ID)],
+            "scan_interval": 5,
+        },
+    )
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+    mock_c4_director.get_all_items_by_category.side_effect = TimeoutError
+
+    opened = await _open_and_save(
+        hass, mock_config_entry, {CONF_ENABLED_PLATFORMS: ["cover", "light"]}
+    )
+
+    assert CONF_DRY_CONTACT_COVERS not in opened["schema_keys"]
+    assert mock_config_entry.options == {
+        CONF_ENABLED_PLATFORMS: ["cover", "light"],
+        CONF_DRY_CONTACT_COVERS: [str(COVER_ID)],
+    }
+
+
+@pytest.mark.usefixtures("mock_c4_account", "cover_variables")
+async def test_удалённая_штора_не_блокирует_сохранение(
+    hass: HomeAssistant, mock_config_entry: MockConfigEntry
+) -> None:
+    """Отмеченной шторы больше нет в проекте — форма сохраняется, её отметка уходит."""
+    mock_config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        mock_config_entry,
+        options={
+            CONF_ENABLED_PLATFORMS: ["cover"],
+            CONF_DRY_CONTACT_COVERS: [str(COVER_ID), "99999"],
+        },
+    )
+    await hass.config_entries.async_setup(mock_config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    flow = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
+    defaults = {
+        str(key): key.default() for key in flow["data_schema"].schema if hasattr(key, "default")
+    }
+    assert defaults[CONF_DRY_CONTACT_COVERS] == [str(COVER_ID)]
+
+    result = await hass.config_entries.options.async_configure(
+        flow["flow_id"],
+        {
+            CONF_ENABLED_PLATFORMS: ["cover"],
+            CONF_DRY_CONTACT_COVERS: defaults[CONF_DRY_CONTACT_COVERS],
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] == "create_entry"
+    assert mock_config_entry.options[CONF_DRY_CONTACT_COVERS] == [str(COVER_ID)]

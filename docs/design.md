@@ -247,9 +247,23 @@ the proxy-protocol doc subset we had just didn't happen to include that page.
 ## Error handling
 
 From upstream push: `ConfigEntryNotReady` on connection failures during setup,
-`ConfigEntryAuthFailed` on bad credentials, token refresh retried with exponential backoff
-(`RETRY_BACKOFF_MAX_SEC`), `BadToken` on a REST call triggers one refresh-and-retry, the
-WebSocket disconnect marks entities unavailable until the reconnect resync brings them back.
+`BadToken` on a REST call triggers one refresh-and-retry, the WebSocket disconnect marks
+entities unavailable until the reconnect resync brings them back. Fixed on top (review of
+the fork, 0.4.1 / control4-push 0.2.0, each with a test in `test_robustness.py`):
+
+- The scheduled token refresh reschedules on *any* error and hands auth failures to a
+  reauth flow (`async_step_reauth`: new password, same entry). Upstream only retried on
+  `ConfigEntryNotReady`, so a `C4Exception` ended the chain and push died at token expiry.
+- The resync isolates items: one failing fetch or state write no longer ends the pass;
+  4 requests at a time instead of one by one.
+- Options flow: saving merges into the stored options (the dry-contact field is absent
+  when the cover list can't be fetched - replacing wiped the marks); any Director error
+  just hides that field; ids of covers gone from the project are dropped from the default
+  (`multi_select` rejects a default it doesn't list, which blocked saving).
+
+**Diagnostics** (`diagnostics.py`): Download diagnostics gives every light/cover item with
+its raw Director variables, credentials redacted - the only way to see from here what a
+live Director reports.
 
 ## Packaging
 

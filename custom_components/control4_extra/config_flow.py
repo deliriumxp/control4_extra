@@ -8,6 +8,7 @@
 #    individual dry-contact covers. No polling interval: state comes by push.
 """Config flow for Control4 Extra integration."""
 
+from collections.abc import Mapping
 import logging
 from typing import Any, override
 
@@ -19,7 +20,12 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlowWithReload,
 )
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
+from homeassistant.const import (
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_SCAN_INTERVAL,
+    CONF_USERNAME,
+)
 from homeassistant.core import callback
 from homeassistant.helpers import aiohttp_client, config_validation as cv
 from homeassistant.helpers.device_registry import format_mac
@@ -176,6 +182,47 @@ class Control4ExtraConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(step_id="platforms", data_schema=schema)
 
+    @override
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Start reauth: setup or a token refresh raised ConfigEntryAuthFailed."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask for new account credentials; keep the entry, its entities and options."""
+        reauth_entry = self._get_reauth_entry()
+        errors: dict[str, str] = {}
+        description_placeholders: dict[str, str] = {}
+
+        if user_input is not None:
+            errors, data, description_placeholders = await self._async_try_connect(
+                {CONF_HOST: reauth_entry.data[CONF_HOST], **user_input}
+            )
+            if not errors and data is not None:
+                mac = (data[CONF_CONTROLLER_UNIQUE_ID].split("_", 3))[2]
+                await self.async_set_unique_id(format_mac(mac))
+                self._abort_if_unique_id_mismatch(reason="wrong_controller")
+                return self.async_update_reload_and_abort(
+                    reauth_entry, data_updates=data
+                )
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_USERNAME, default=reauth_entry.data[CONF_USERNAME]
+                    ): str,
+                    vol.Required(CONF_PASSWORD): str,
+                }
+            ),
+            errors=errors,
+            description_placeholders=description_placeholders,
+        )
+
     @staticmethod
     @callback
     @override
@@ -193,15 +240,16 @@ class OptionsFlowHandler(OptionsFlowWithReload):
         """Return {item_id: name} for currently known Control4 cover items.
 
         Used to let the user mark specific covers as dry-contact (no position
-        feedback) rather than applying that to every cover. Empty if the
-        entry isn't currently loaded (runtime_data unset) - the option is
-        still editable, just with nothing to pick yet.
+        feedback) rather than applying that to every cover. Empty whenever the
+        list can't be had - entry not loaded, Director offline, expired token -
+        so Configure still opens then; the stored marks are kept (see init step).
         """
         try:
             items = await get_items_of_category(
                 self.hass, self.config_entry, CONTROL4_COVER_CATEGORY
             )
-        except AttributeError:
+        except Exception as err:  # noqa: BLE001 - any failure: platforms stay editable
+            _LOGGER.debug("Cover list unavailable for the options flow: %s", err)
             return {}
         return {
             str(item["id"]): item["name"]
@@ -214,7 +262,15 @@ class OptionsFlowHandler(OptionsFlowWithReload):
     ) -> ConfigFlowResult:
         """Handle options flow."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            # Merge, don't replace: without a cover list the dry-contact field isn't
+            # on the form, and replacing would silently wipe the stored marks.
+            options = {
+                key: value
+                for key, value in self.config_entry.options.items()
+                if key != CONF_SCAN_INTERVAL  # left over from the polling versions
+            }
+            options.update(user_input)
+            return self.async_create_entry(title="", data=options)
 
         known_covers = await self._async_get_known_covers()
 
@@ -230,7 +286,15 @@ class OptionsFlowHandler(OptionsFlowWithReload):
             schema[
                 vol.Optional(
                     CONF_DRY_CONTACT_COVERS,
-                    default=self.config_entry.options.get(CONF_DRY_CONTACT_COVERS, []),
+                    # Only ids still in the project: multi_select rejects a default it
+                    # doesn't list, so a removed cover would block saving the form.
+                    default=[
+                        item_id
+                        for item_id in self.config_entry.options.get(
+                            CONF_DRY_CONTACT_COVERS, []
+                        )
+                        if item_id in known_covers
+                    ],
                 )
             ] = cv.multi_select(known_covers)
 
