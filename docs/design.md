@@ -326,6 +326,25 @@ reproduced in `tests/test_director_websocket.py` against a fake Director.
    sets the loop's abort event, waits for it to exit and cancels only if it's stuck in a
    connect attempt.
 
+## Cloud dependency at startup; local token (investigated 2026-09-25)
+
+Every setup and every token refresh goes to the Control4 cloud
+(`apis.control4.com/authentication/v1/rest/authorization`) for the director JWT; without it
+`/api/v1/items…` answers `401 Token required`. pyControl4 puts no timeout on these calls.
+Seen on hardware (EA-1 object, fork 0.2.1): the object's link to that endpoint hung ~4 min
+and ended in `Server disconnected` while the cloud answered in 0.6 s from elsewhere and the
+Director was healthy - the integration stayed down until the link recovered by itself.
+
+Not done yet, both options open:
+- a timeout (~30 s) on the cloud calls, so a hang becomes a quick `ConfigEntryNotReady` retry;
+- **local token.** The broker lists `/api/v1/localjwt` (`GET /api/v1/routes`, pyControl4
+  #58). Checked read-only on a CORE1 at OS 4.2.1: its built-in page
+  `/api/v1/localjwt/html` posts `{"user", "password"}` to `/api/v1/localjwt` and expects
+  `{"token"}`; an unknown user gets `401 "User not allowed."`, an empty body a 500.
+  Unknown: which local user is allowed, and whether the Director accepts that token for
+  items, variables and the WebSocket. Needs the controller's local credentials to test.
+  (`/api/v1/jwt` on the same broker is the cloud login - email, app key, env - not local.)
+
 ## Testing
 
 - `tests/` runs on `pytest-homeassistant-custom-component` against the minimum supported HA
