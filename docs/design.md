@@ -173,7 +173,7 @@ come along (`tests/`); snapshots differ from the fork only in `platform: control
 - Entities are plain `Entity` subclasses fed by push (`Control4Entity._update_callback`), not
   coordinators. Media players keep a 5 s coordinator: part of room state is never pushed.
 - **Safety resync every 60 s** (`WEBSOCKET_RESYNC_INTERVAL_SEC`) re-reads every subscribed
-  item over REST. Kept because push demonstrably loses variables on some controllers (X4,
+  item over REST, in one bulk request. Kept because push demonstrably loses variables on some controllers (X4,
   `lawtancool/hass-control4` #50) and nothing else would correct the drift. Remove only if
   hardware shows push loses nothing.
 - The director token is refreshed `SCHEDULE_REFRESH_ADVANCE_SEC` before `validSeconds` runs
@@ -254,8 +254,17 @@ the fork, 0.4.1 / control4-push 0.2.0, each with a test in `test_robustness.py`)
 - The scheduled token refresh reschedules on *any* error and hands auth failures to a
   reauth flow (`async_step_reauth`: new password, same entry). Upstream only retried on
   `ConfigEntryNotReady`, so a `C4Exception` ended the chain and push died at token expiry.
-- The resync isolates items: one failing fetch or state write no longer ends the pass;
-  4 requests at a time instead of one by one.
+- **One bulk request, never a request per item.** Upstream fetched
+  `/api/v1/items/<id>/variables` per item, concurrently at startup (one TLS connection
+  each) and one by one in the resync. On hardware after an HA restart all ~80 initial
+  requests timed out at 10 s and, since upstream skips items without initial variables,
+  every light vanished until the next restart. Measured on a 4.2.1 controller: 80 parallel
+  new TLS connections to the broker take 6x as long as the same 80 requests over one.
+  Now setup (`fetch_initial_variables`) and the resync each make one
+  `/api/v1/items/variables?varnames=` call with the platforms' variable names - what the
+  official polling version always did; a Director that doesn't answer makes the platform
+  `PlatformNotReady`, which HA retries with backoff. A state write that fails for one item
+  doesn't end the resync for the rest.
 - Options flow: saving merges into the stored options (the dry-contact field is absent
   when the cover list can't be fetched - replacing wiped the marks); any Director error
   just hides that field; ids of covers gone from the project are dropped from the default
