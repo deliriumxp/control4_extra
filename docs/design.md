@@ -334,10 +334,12 @@ goal is just to feel more responsive.
 
 ## Testing
 
-- No physical Director/blind hardware available in this environment. Verification done so far:
-  every file's syntax and real symbol resolution checked (`py_compile` + actual import against
-  the real `homeassistant` 2026.2.3 and `pyControl4==2.0.2` packages in a scratch venv — zero
-  errors). Behavior against a live Director/blind still needs the user's own hardware.
-- Recommended follow-up once installed for real: confirm the options-flow platform toggle
-  actually adds/removes entities on reload, and confirm `stop_cover` behaves as expected on the
-  real 2-relay blind driver.
+- `tests/` runs on `pytest-homeassistant-custom-component` against the minimum supported HA
+  (Python 3.14): `uv venv -p 3.14 && uv pip install "homeassistant==2026.8.*"
+  pytest-homeassistant-custom-component xmltodict && pytest`. The Director is mocked
+  (`tests/conftest.py`), so nothing here proves behavior against real hardware.
+- The platform-toggle test loads the `light` domain first on purpose: on a real instance other
+  integrations (KNX) have it loaded, and only then does HA actually try to unload a platform
+  that was never set up - found on hardware as "Config entry was never loaded!", invisible
+  in a bare test instance.
+- Still only checked on hardware by the user: `stop_cover` on the real 2-relay blind driver.

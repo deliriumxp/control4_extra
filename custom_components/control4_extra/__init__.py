@@ -53,6 +53,10 @@ class Control4RuntimeData:
     director_sw_version: str
     scan_interval: int
     ui_configuration: dict[str, Any] | None
+    # What async_setup_entry actually forwarded. Unload must use this, not the
+    # options: the options flow saves new options *before* its reload unloads, so
+    # a just-enabled platform would be "unloaded" without ever having been loaded.
+    platforms: list[Platform]
 
 
 type Control4ConfigEntry = ConfigEntry[Control4RuntimeData]
@@ -182,10 +186,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: Control4ConfigEntry) -> 
         director_sw_version=director_sw_version,
         scan_interval=scan_interval,
         ui_configuration=ui_configuration,
+        platforms=_enabled_platforms(entry),
     )
 
     await hass.config_entries.async_forward_entry_setups(
-        entry, _enabled_platforms(entry)
+        entry, entry.runtime_data.platforms
     )
 
     return True
@@ -194,7 +199,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: Control4ConfigEntry) -> 
 async def async_unload_entry(hass: HomeAssistant, entry: Control4ConfigEntry) -> bool:
     """Unload a config entry."""
     return await hass.config_entries.async_unload_platforms(
-        entry, _enabled_platforms(entry)
+        entry, entry.runtime_data.platforms
     )
 
 
