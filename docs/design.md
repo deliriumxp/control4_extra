@@ -326,24 +326,36 @@ reproduced in `tests/test_director_websocket.py` against a fake Director.
    sets the loop's abort event, waits for it to exit and cancels only if it's stuck in a
    connect attempt.
 
-## Cloud dependency at startup; local token (investigated 2026-09-25)
+## Director token: saved, refreshed with retries (0.5.0); local token (investigated)
 
-Every setup and every token refresh goes to the Control4 cloud
-(`apis.control4.com/authentication/v1/rest/authorization`) for the director JWT; without it
-`/api/v1/items…` answers `401 Token required`. pyControl4 puts no timeout on these calls.
-Seen on hardware (EA-1 object, fork 0.2.1): the object's link to that endpoint hung ~4 min
-and ended in `Server disconnected` while the cloud answered in 0.6 s from elsewhere and the
-Director was healthy - the integration stayed down until the link recovered by itself.
+The Director validates its bearer token itself for the token's 24 h; the Control4 cloud
+(`apis.control4.com/authentication/v1/rest/authorization`) is needed only to issue it.
+Upstream fetched a new one - plus the controller list and OS version, also from the cloud -
+at every setup. Seen on hardware 2026-09-25 (EA-1 object, fork 0.2.1): the object's link to
+that endpoint hung ~4 min and ended in `Server disconnected`, the cloud answered in 0.6 s
+from elsewhere and the Director was healthy, and the integration stayed down until the link
+recovered by itself. Access to Control4 resources from Russia is unreliable, for hours.
 
-Not done yet, both options open:
-- a timeout (~30 s) on the cloud calls, so a hang becomes a quick `ConfigEntryNotReady` retry;
-- **local token.** The broker lists `/api/v1/localjwt` (`GET /api/v1/routes`, pyControl4
-  #58). Checked read-only on a CORE1 at OS 4.2.1: its built-in page
-  `/api/v1/localjwt/html` posts `{"user", "password"}` to `/api/v1/localjwt` and expects
-  `{"token"}`; an unknown user gets `401 "User not allowed."`, an empty body a 500.
-  Unknown: which local user is allowed, and whether the Director accepts that token for
-  items, variables and the WebSocket. Needs the controller's local credentials to test.
-  (`/api/v1/jwt` on the same broker is the cloud login - email, app key, env - not local.)
+`token_store.py` (same as control4-push 0.3.0; `tests/test_token.py`):
+- token, expiry and Director version live in `entry.data`; setup starts from the saved token
+  when it has >1 h left, and goes to the cloud only when there is none or the Director
+  rejects it (`BadToken` -> one cloud fetch);
+- Director version from the controller broker's local `/api/v1/version` (no token), then the
+  saved value, the cloud last;
+- refresh starts 12 h before expiry (half the life left for retries); failures retry after
+  1, 2, 4 ... min, then every 30 min; each failure is a WARNING (attempt, reason, next try,
+  token life left), an expired token an ERROR, success after failures INFO;
+- a retry while the saved token is still fresh only reconnects the WebSocket - no cloud;
+- cloud calls are time-boxed to 30 s (pyControl4 sets no timeout).
+
+**Local token - not done.** The broker lists `/api/v1/localjwt` (`GET /api/v1/routes`,
+pyControl4 #58). Checked read-only on a CORE1 at OS 4.2.1: its built-in page
+`/api/v1/localjwt/html` posts `{"user", "password"}` to `/api/v1/localjwt` and expects
+`{"token"}`; an unknown user gets `401 "User not allowed."`, an empty body a 500. Unknown:
+which local user is allowed, and whether the Director accepts that token for items,
+variables and the WebSocket. Needs the controller's local credentials to test. It would
+remove the cloud from the refresh too. (`/api/v1/jwt` on the same broker is the cloud login
+- email, app key, env - not local.)
 
 ## Testing
 
