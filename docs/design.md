@@ -82,8 +82,14 @@ directly over the network; Control4 project configuration is untouched.
 
 ## pyControl4 version: 2.0.2, not upstream's pinned 1.5.0
 
+Upstream caught up in `home-assistant/core` #176050 (merged 2026-07-10, ships in HA 2026.8):
+its manifest now pins `pyControl4==2.0.2` too, and its call sites match our rename map
+line for line (re-diffed against `dev` on 2026-09-25 - the platform files differ only in
+our additions listed below). 2.0.2 is still the latest pyControl4 release; the library has
+had no commits since 2026-02-23.
+
 Verified by downloading both wheels and diffing: 1.5.0 (what `home-assistant/core`'s manifest
-currently pins) uses camelCase methods (`getAccountBearerToken`, `getAllItemInfo`,
+pinned at fork time) uses camelCase methods (`getAccountBearerToken`, `getAllItemInfo`,
 `setLevelTarget`, ...); `2.0.2` (current PyPI release) renamed everything to snake_case with
 **no backwards-compatible aliases** — a straight port of upstream's files against `2.0.2`
 would fail at the first API call. Full rename map applied across `__init__.py`,
@@ -118,10 +124,33 @@ directory) instead of depending on the pip package: every `from pyControl4.x imp
 (`blind.py`, `climate.py`, `light.py`, `room.py`, `__init__.py`) had an absolute
 self-import (`from pyControl4 import C4Entity`) changed to a relative one (`from . import
 C4Entity`) so they resolve within the vendored copy rather than reaching for a top-level
-`pyControl4` install. `manifest.json`'s `requirements` is now empty - nothing to pip install,
-nothing to conflict with the official integration's own pin. Verified with the same import
+`pyControl4` install. `manifest.json` no longer requires `pyControl4` - nothing to conflict
+with the official integration's own pin. The vendored copy still imports `xmltodict`
+(`error_handling.py`), hence `"xmltodict>=0.13"`: a lower bound, never an exact pin, so
+whatever HA already has (`requirements_all.txt` pins it for other integrations and the
+official container installs that) satisfies it without a reinstall fight. It was missing
+until 0.3.1 - an HA Core venv install failed at import; HA OS/container only worked by luck. Verified with the same import
 test as above, but with `pyControl4` actively *uninstalled* from the scratch venv first, to
 prove there's no remaining dependency on a global install.
+
+Still vendored now that upstream pins the same 2.0.2: the conflict is structural, not
+version-specific - the next time either side bumps, two exact pins fight again. Only the
+modules we call are vendored (`account`, `blind`, `climate`, `director`, `error_handling`,
+`light`, `room`); `websocket.py`, `alarm.py`, `fan.py`, `relay.py` are **not** in the copy.
+
+### `via_device_id`, minimum Home Assistant 2026.8
+
+`DeviceInfo(via_device=...)` is deprecated (runtime warning since HA 2026.8, removed in
+2027.8 - developers.home-assistant.io blog, 2026-07-21: identifiers are only unique per
+config entry). `entity.py` uses `via_device_id=dr.async_get_device_id_by_identifier(...)`
+exactly like upstream #177494. That helper only exists from HA 2026.8, hence
+`"homeassistant": "2026.8.0"` in `hacs.json`. The controller device it looks up is
+registered in `async_setup_entry` before any platform is forwarded, so the lookup can't
+race.
+
+Deliberately *not* taken from upstream: `probatio` instead of `voluptuous` (HA 2026.9 keeps
+`voluptuous` as a permanent alias for custom integrations) and PEP 758 `except X, Y:`
+(Python 3.14-only syntax).
 
 ## Architecture
 
@@ -214,7 +243,7 @@ up to `API_RETRY_TIMES` (5) during setup via `call_c4_api_retry`.
 ## Packaging
 
 - `custom_components/control4_extra/` — `manifest.json` domain `control4_extra`, `requirements:
-  []` (pyControl4 is vendored, see above), `ssdp` discovery kept (`c4:director`, same as
+  ["xmltodict>=0.13"]` (pyControl4 is vendored, see above), `ssdp` discovery kept (`c4:director`, same as
   upstream), `issue_tracker` set (required by HACS's integration checklist).
 - `hacs.json` + `LICENSE` (Apache-2.0, matching upstream) at repo root for HACS
   custom-repository installation.
@@ -241,16 +270,35 @@ Two real, independent PRs/forks already tried this, so this isn't speculation:
   bleeding-edge features."*
 
 Concrete blockers found:
-1. **Blocking SSL call inside the event loop, current and unresolved.**
-   `lawtancool/pyControl4` issue [#53](https://github.com/lawtancool/pyControl4/issues/53)
-   (closed, partial fix: `ssl_verify`/`http_session` handling in `sio_connect`) regressed and
-   reopened as issue [#62](https://github.com/lawtancool/pyControl4/issues/62) (**open**, dated
-   HA 2026.x / Python 3.14 / pyControl4 1.5.0): `sio_connect()` is `async def` but internally
-   triggers synchronous `ssl.SSLContext.load_default_certs()` /
-   `set_default_verify_paths()` inside `socketio`/`engineio`, which HA's own blocking-call
-   detector flags. This matches the vendored `websocket.py` (2.0.2) we have but never adopted -
-   it still constructs a fresh `socketio.AsyncClient` per `sio_connect()` call, so the risk
-   almost certainly still applies to our vendored copy too.
+1. **SSL in `C4Websocket` (pyControl4 [#53](https://github.com/lawtancool/pyControl4/issues/53)
+   / [#62](https://github.com/lawtancool/pyControl4/issues/62)) - reproduced and root-caused
+   2026-09-25, fix proven; applies to 2.0.2 as released, #62 still open with no maintainer
+   reply.** Reproduced against a fake Director (TLS with a self-signed cert, Engine.IO v3 /
+   Socket.IO v2 on `/socket.io/`, subscription via `GET /api/v1/items/datatoui`, the server
+   drops the socket once) with HA's detector emulated by wrapping
+   `SSLContext.load_default_certs` / `set_default_verify_paths`. The transport is the
+   `python-socketio-v4` / `python-engineio-v3` forks; the code in question is
+   `engineio_v3/asyncio_client.py`. Two different failures, depending on the session:
+   - **No session passed** (`C4Websocket(ip)`): `ssl_verify=False` makes engineio call
+     `ssl.create_default_context()` inside `_connect_websocket` (line 299) on **every** connect
+     *and every automatic reconnect attempt* - exactly the #62 traceback. Reconnect itself works.
+   - **HA's no-verify session passed** (what 2.0.2's #54 fix, `hass-control4` 1.7.0 and core
+     PR #176238 do): the first connect is clean - no blocking calls, events arrive. But
+     after **any** drop, reconnect never succeeds: engineio's `_reset()` closes its session
+     wrapper, and the next attempt creates a bare `aiohttp.ClientSession()` (verifying
+     connector, `ssl_verify=True`) → `ClientConnectorCertificateError: self-signed
+     certificate` on the Director's cert, retried forever and swallowed. Push stays dead until the
+     next `sio_connect()` - the daily token refresh. In #176238 entities go `unavailable` on the
+     drop and come back only through its 60 s resync poll, so it silently degrades to 60 s
+     polling for up to a day.
+   - **Fix (proven on the same rig: no blocking calls, reconnect succeeds, events flow
+     again):** subclass engineio's `AsyncClient` to (re)bind its session to the caller's
+     connector (`ClientSession(connector=..., connector_owner=False)`) whenever it is
+     missing or closed - in `_connect_websocket` and `_send_request` - and to drop the
+     reference in `_reset()`; subclass the socketio `AsyncClient` so that
+     `_engineio_v3_client_class()` returns it (`functools.partial` with the connector) and
+     `ssl_verify=True` (the connector's no-verify context applies). Require the session - no
+     library-owned fallback. This lives in our vendored `websocket.py` once push is added.
 2. **Push silently misses some variables/controller generations - confirmed in production, not
    theoretical.** `lawtancool/hass-control4` issue
    [#50](https://github.com/lawtancool/hass-control4/issues/50): a user's thermostat current
@@ -262,13 +310,21 @@ Concrete blockers found:
 3. **The director bearer token expires roughly every 86400 seconds, and `sio_connect()`'s own
    docstring says it must be re-called with a fresh token when that happens "otherwise the
    Control4 Director will stop sending WebSocket messages."** So the socket gets torn down and
-   recreated roughly daily regardless - re-triggering blocker #1 on that cadence, not a one-time
-   startup cost.
+   recreated roughly daily regardless (a planned reconnect on the token's `validSeconds`, as
+   #176238 does it); with the fix from #1 that path makes no blocking calls.
 4. **Architectural cost:** both real implementations drop `CoordinatorEntity` entirely in favor
    of plain `Entity` subclasses with hand-rolled `_attr_available` / `extra_state_attributes`
    dict bookkeeping and manual `schedule_update_ha_state()` calls - materially more custom state
    management surface than our current coordinator-based platforms, in exchange for lower
    latency.
+
+Upstream status (2026-09-25): `home-assistant/core` PR
+[#176238](https://github.com/home-assistant/core/pull/176238) converts the official
+integration to `local_push` (keeps a 60 s resync poll for every entity and removes the
+`scan_interval` option; issue #168838 asks to remove that option regardless). It is open with
+changes requested and is affected by blocker #1's reconnect failure. Its token refresh
+and resync wiring is a usable reference. The official integration on `dev` still polls
+(5 s by default, one coordinator per platform).
 
 If this ever gets revisited: it would have to be additive (push as a fast-path optimization on
 top of the existing coordinator, which remains the source of truth via periodic polling as a

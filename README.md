@@ -22,10 +22,12 @@ changed and why) and adds:
   UI — mark those specific covers in the same options screen and their buttons stay active
   regardless of what the status claims.
 
-It also tracks the current `pyControl4` release (`2.0.2`) rather than the older `1.5.0`
-upstream still pins.
+It uses the current `pyControl4` release (`2.0.2`, same as upstream since HA 2026.8), vendored
+in-tree so it can never conflict with the official integration's own pin.
 
 ## Installation (HACS)
+
+Requires Home Assistant **2026.8** or newer.
 
 1. HACS → the three-dot menu → **Custom repositories**.
 2. Add this repository URL, category **Integration**.
